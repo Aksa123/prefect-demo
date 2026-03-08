@@ -1,0 +1,13 @@
+insert into car_sales_dataset values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+-- on conflict (sale_id) do update set
+--     brand_id = excluded.brand_id, 
+--     brand_name = excluded.brand_name,
+--     car_id = excluded.car_id,
+--     car_name = excluded.car_name,
+--     sale_price = excluded.sale_price,
+--     currency_id = excluded.currency_id,
+--     currency_name = excluded.currency_name,
+--     sale_price_normalized = excluded.sale_price_normalized,
+--     sale_price_normalized_currency = excluded.sale_price_normalized_currency,
+--     exchange_rate_date = excluded.exchange_rate_date,
+--     transaction_date = excluded.transaction_date

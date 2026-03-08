@@ -1,0 +1,1 @@
+delete from car_sales_dataset where sale_id = ?
