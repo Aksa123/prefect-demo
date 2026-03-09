@@ -3,7 +3,8 @@ from datetime import datetime, timedelta, UTC
 from time import sleep, perf_counter
 import duckdb
 from duckdb import Expression, ConstantExpression
-from settings import BASE_PATH, DATA_PATH, QUERIES_PATH, EXCHANGE_RATE_API_KEY, db_source_conn, db_destination_conn
+from code.settings import BASE_PATH, DATA_PATH, QUERIES_PATH, EXCHANGE_RATE_API_KEY, db_source_conn, db_destination_conn
+from code.utils import get_currency_exchange_rate_from_file
 import requests
 import json
 from prefect import get_run_logger
@@ -40,9 +41,8 @@ class TestQueries(unittest.TestCase):
         target_currency_code = 'USD'
 
         # Dummy exchange list
-        with open(BASE_PATH.joinpath('tests', 'exchange_list.json'), 'r') as f:
-            exchange_list:dict = json.loads(f.read())
-            last_updated_at = datetime.fromtimestamp(exchange_list['time_last_update_unix'], tz=UTC)
+        exchange_list:dict = get_currency_exchange_rate_from_file('USD')
+        last_updated_at = datetime.fromtimestamp(exchange_list['time_last_update_unix'], tz=UTC)
 
         rows = [[code, rate] for code, rate in exchange_list['conversion_rates'].items()]
         schema = ['code', 'rate']

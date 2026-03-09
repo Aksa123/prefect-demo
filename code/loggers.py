@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone, UTC
 from logging import Logger, Formatter, Handler, FileHandler, StreamHandler
 import os, sys, time
-from settings import BASE_PATH, LIMIT_LOG_WRITES_PER_HOUR
+from code.settings import BASE_PATH, LIMIT_LOG_WRITES_PER_HOUR
 
 
 
