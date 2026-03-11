@@ -1,14 +1,19 @@
 from prefect.docker import DockerImage
 from datetime import datetime, timedelta
 from time import sleep, perf_counter
-from code.pipelines import etl
+from code.pipelines import etl, elt
 from code.utils import close_databases
 from code.loggers import logger
 
 
 if __name__ == "__main__":
     t1 = perf_counter()
+    print('### ETL start ###')
     res_etl = etl.run()
+    print('### ETL done ###')
+    print('### ELT start ###')
+    res_elt = elt.run()
+    print('### ELT done ###')
     close_databases()
     t2 = perf_counter()
     

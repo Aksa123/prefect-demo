@@ -1,6 +1,7 @@
 from prefect import flow, task
 from prefect.logging import get_run_logger
 from prefect.cache_policies import TASK_SOURCE, INPUTS, NO_CACHE
+from prefect.futures import wait
 from prefect.docker import DockerImage
 import duckdb
 from duckdb import Expression, ConstantExpression
@@ -9,105 +10,63 @@ from datetime import datetime, timedelta, UTC
 from code.settings import BASE_PATH, DATA_PATH, QUERIES_PATH, EXCHANGE_RATE_API_KEY, db_source_conn, db_destination_conn
 from code.loggers import logger
 from code.pipelines.state_handlers import completion_handler, failure_handler
-from code.utils import get_currency_exchange_rate, get_currency_exchange_rate_from_file
+from code.utils import get_currency_exchange_rate_as_df, generate_upsert_query, generate_insert_query, generate_delete_query
+from psycopg.sql import SQL, Identifier
+
 
 
 # No cache because DuckDBPyRelation is always bound to a DB connection
 # If need to cache then must fetch first e.g. to DataFrame
 @task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
-def extract_data_by_table_dates(table_name: str, date_start: datetime, date_end: datetime) -> duckdb.DuckDBPyRelation:
-    # This is actually not a good practice, but sqlite3 lib does not support placeholders for table name
-    # In production e.g. with Postgres db, psycopg does have placeholders for table name via SQL composer
-    query = f"""
-            select * from {table_name} 
-            where 
-            coalesce(updated_at, created_at) between ? and ?
-            """
-    sales_data_df = db_source_conn.sql(query, params=[date_start, date_end])
-    return sales_data_df
-    
-
-@task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
-def normalize_currency(sales_data: duckdb.DuckDBPyRelation, target_currency_code:str='USD') -> duckdb.DuckDBPyRelation:
-    """Normalize sale price e.g. to USD"""
-    # For testing purpose, get the API response from file
-    if not EXCHANGE_RATE_API_KEY:
-        exchange_list = get_currency_exchange_rate_from_file(target_currency_code=target_currency_code)
-    else:
-        exchange_list = get_currency_exchange_rate(target_currency_code=target_currency_code)
-    last_updated_at = datetime.fromtimestamp(exchange_list['time_last_update_unix'], tz=UTC)
-
-    rows = [[code, rate] for code, rate in exchange_list['conversion_rates'].items()]
-    schema = ['code', 'rate']
-    exchange_list_df = pl.DataFrame(rows, schema=schema, orient='row')
-    # Make sure datasets are in the same connection (db_source_conn) so they can be joined
-    exchange_list_df = db_source_conn.sql('select * from exchange_list_df')
-
-    sales_normalized = sales_data.set_alias('sales') \
-                        .join(
-                            exchange_list_df.set_alias('exchange'), 
-                            condition=Expression('sales.currency_name').__eq__(Expression('exchange.code')),
-                            how='inner') \
-                        .select(
-                            Expression('*'), 
-                            Expression('sales.sale_price').__div__(Expression('exchange.rate')).alias('sale_price_normalized'),
-                            ConstantExpression(target_currency_code).alias('sale_price_normalized_currency'),
-                            ConstantExpression(last_updated_at).alias('exchange_rate_date'))                     
-    
-    return sales_normalized
-
-
-@task(cache_policy=NO_CACHE, on_failure=[failure_handler])
-def remove_invalid_data(sales_data: duckdb.DuckDBPyRelation) -> duckdb.DuckDBPyRelation:    
-    # Simulate data validation
-    sales_data_validated = sales_data \
-                        .filter(Expression('sale_price').__gt__(0)) \
-                        .filter(Expression('brand_id').isnotnull()) \
-                        .filter(Expression('car_id').isnotnull()) \
-                        .filter(Expression('currency_id').isin(1,2,3,4)) \
-                        .filter(Expression('sale_price_normalized').__gt__(0)) \
-                        .filter(Expression('sale_price_normalized_currency').__ne__(ConstantExpression('')))
-    
-    return sales_data_validated
+def extract_table_data_by_dates(table_name: str, date_start: datetime, date_end: datetime) -> duckdb.DuckDBPyRelation:
+    query = SQL("select * from {} where coalesce(updated_at, created_at) between ? and ?").format(Identifier(table_name)).as_string()
+    data = db_source_conn.sql(query, params=[date_start, date_end])
+    return data
 
 
 @task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
-def load(sales_data: duckdb.DuckDBPyRelation, parquet_filename: str = None) -> None:
-    with open(QUERIES_PATH.joinpath('upsert_car_sales_dataset.sql'), 'r' ) as f:
-        insert_query = f.read()
-    with open(QUERIES_PATH.joinpath('delete_car_sales_dataset.sql'), 'r' ) as f:
-        delete_query = f.read() 
-
-    sales_data = sales_data \
-                    .select('sale_id', 
-                            'brand_id', 
-                            'brand_name', 
-                            'car_id',
-                            'car_name',
-                            'sale_price',
-                            'currency_id',
-                            'currency_name',
-                            'sale_price_normalized',
-                            'sale_price_normalized_currency',
-                            'exchange_rate_date',
-                            'transaction_date') \
-                    .limit(100)
+def load_table(table_name: str, pk_column_names: list[str], data: duckdb.DuckDBPyRelation) -> None:
+    if data.__len__() == 0:
+        print('empty')
+        return
+    
+    # In production e.g. with Postgres db we can simply use UPSERT query
+    # Somehow SQLite doesn't work with UPSERT here
+    insert_query = generate_insert_query(table_name, data.columns)
+    delete_query = generate_delete_query(table_name, pk_column_names)
+    # Find out index that contains pk/unique
+    pk_index = []
+    for n, p in enumerate(data.columns):
+        if p in pk_column_names:
+            pk_index.append(n)
     
     # Batch insert per 1000 items
     while True:
-        data = sales_data.fetchmany(1000)
-        if not data:
+        items = data.fetchmany(1000)
+        if not items:
             break
         # Sqlite doesn't support INSERT ON CONFLICT DO UPDATE, so delete first then insert again to avoid duplication
-        db_destination_conn.executemany(delete_query, [(i[0],) for i in data])
-        db_destination_conn.executemany(insert_query, data)
+        db_destination_conn.executemany(delete_query, [ [i[k] for k in pk_index] for i in items ])
+        db_destination_conn.executemany(insert_query, items)
         db_destination_conn.commit()
-        print(f'added {len(data)} items')
+        print(f'added {len(items)} items')
 
-    if parquet_filename:
-        if not parquet_filename.endswith('.parquet'):
-            parquet_filename = parquet_filename + '.parquet'
-        sales_data.write_parquet(DATA_PATH.joinpath('destinations', parquet_filename).__str__())
+
+# In ELT model, we can just perform transformations in the datawarehouse/destination side
+@task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
+def transform_dimension_car_detail(date_start: datetime, date_end: datetime):
+    with open(BASE_PATH / 'code' / 'queries' / 'dimension_car_detail.sql', 'r' ) as f:
+        query = f.read()
+    data = db_destination_conn.sql(query, params=[date_start, date_end, date_start, date_end, date_start, date_end])
+    load_table('dimension_car_detail', ['id'], data)
+
+
+@task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
+def transform_fact_car_sales_dataset(date_start: datetime, date_end: datetime):
+    with open(BASE_PATH / 'code' / 'queries' / 'fact_car_sales_dataset.sql', 'r' ) as f:
+        query = f.read()
+    data = db_destination_conn.sql(query, params=[date_start, date_end])
+    load_table('fact_car_sales_dataset', ['sale_id'], data)
 
 
 @flow(name='demo-car-sales', on_completion=[completion_handler], on_failure=[failure_handler])
@@ -117,10 +76,30 @@ def run():
     date_start = datetime(year=last_year, month=1, day=1)
     date_end = datetime(year=last_year, month=12, day=31)
 
-    sales_raw = extract_sales_data(date_start, date_end)
-    sales_normalized = normalize_currency(sales_raw, target_currency_code='USD')
-    sales_validated = remove_invalid_data(sales_normalized)
+    # Fetch and load data
+    data_brands = extract_table_data_by_dates('brands', date_start, date_end)
+    load_table('brands', ['id'], data_brands)
 
-    min_date = date_start.strftime('%Y%m%d')
-    max_date = date_end.strftime('%Y%m%d')
-    load(sales_validated, parquet_filename=f'car_sales_dataset__{min_date}-{max_date}.parquet')
+    data_types = extract_table_data_by_dates('types', date_start, date_end)
+    load_table('types', ['id'], data_types)
+
+    data_currencies = extract_table_data_by_dates('currencies', date_start, date_end)
+    load_table('currencies', ['id'], data_currencies)
+
+    data_cities = extract_table_data_by_dates('cities', date_start, date_end)
+    load_table('cities', ['id'], data_cities)
+
+    data_cars = extract_table_data_by_dates('cars', date_start, date_end)
+    load_table('cars', ['id'], data_cars)
+
+    data_customers = extract_table_data_by_dates('customers', date_start, date_end)
+    load_table('customers', ['id'], data_customers)
+
+    data_car_sales = extract_table_data_by_dates('car_sales', date_start, date_end)
+    load_table('car_sales', ['id'], data_car_sales)
+    
+    exchange_list = get_currency_exchange_rate_as_df('USD')
+    load_table('currency_rates', ['code'], exchange_list)
+
+    transform_dimension_car_detail(date_start, date_end)
+    transform_fact_car_sales_dataset(date_start, date_end)
