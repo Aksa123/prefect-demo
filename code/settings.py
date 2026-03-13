@@ -19,8 +19,7 @@ WORK_POOL_NAME = ENV['WORK_POOL_NAME']
 EXCHANGE_RATE_API_KEY = ENV['EXCHANGE_RATE_API_KEY']
 LIMIT_LOG_WRITES_PER_HOUR = int(ENV['LIMIT_LOG_WRITES_PER_HOUR'])
 
-db_source_conn = duckdb.connect(DATA_PATH.joinpath('sources', 'db_source.db').__str__())
-db_destination_conn = duckdb.connect(DATA_PATH.joinpath('destinations', 'db_destination.db').__str__())
+duckdb_conn = duckdb.connect(':memory:')
 
 # Initialize
 duckdb.sql("ATTACH 'host={host} port={port} dbname={name} user={user} password={password}' AS {pgdb} (TYPE {dbtype});"\

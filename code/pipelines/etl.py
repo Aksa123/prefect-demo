@@ -6,10 +6,11 @@ import duckdb
 from duckdb import Expression, ConstantExpression
 import polars as pl
 from datetime import datetime, timedelta, UTC
-from code.settings import BASE_PATH, DATA_PATH, QUERIES_PATH, EXCHANGE_RATE_API_KEY, db_source_conn, db_destination_conn
+from code.settings import BASE_PATH, DATA_PATH, QUERIES_PATH, EXCHANGE_RATE_API_KEY, duckdb_conn
 from code.loggers import logger
 from code.pipelines.state_handlers import completion_handler, failure_handler
 from code.utils import get_currency_exchange_rate, get_currency_exchange_rate_from_file
+from code.connections import db_source, db_destination
 
 
 # No cache because DuckDBPyRelation is always bound to a DB connection
@@ -20,7 +21,7 @@ def extract_sales_data(date_start: datetime, date_end: datetime) -> duckdb.DuckD
     with open(query_path, 'r') as f:
         query = f.read()
     
-    sales_data_df = db_source_conn.sql(query, params=[date_start, date_end])
+    sales_data_df = db_source.fetch_to_duckdb(query, parameters=[date_start, date_end])
     return sales_data_df
     
 
@@ -36,9 +37,8 @@ def normalize_currency(sales_data: duckdb.DuckDBPyRelation, target_currency_code
 
     rows = [[code, rate] for code, rate in exchange_list['conversion_rates'].items()]
     schema = ['code', 'rate']
-    exchange_list_df = pl.DataFrame(rows, schema=schema, orient='row')
-    # Make sure datasets are in the same connection (db_source_conn) so they can be joined
-    exchange_list_df = db_source_conn.sql('select * from exchange_list_df')
+    exchange_list_df = pl.DataFrame(rows, schema=schema, orient='row').to_arrow()
+    exchange_list_df = duckdb_conn.from_arrow(exchange_list_df)
 
     sales_normalized = sales_data.set_alias('sales') \
                         .join(
@@ -70,10 +70,8 @@ def remove_invalid_data(sales_data: duckdb.DuckDBPyRelation) -> duckdb.DuckDBPyR
 
 @task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
 def load(sales_data: duckdb.DuckDBPyRelation, parquet_filename: str = None) -> None:
-    with open(QUERIES_PATH.joinpath('upsert_car_sales_dataset.sql'), 'r' ) as f:
-        insert_query = f.read()
-    with open(QUERIES_PATH.joinpath('delete_car_sales_dataset.sql'), 'r' ) as f:
-        delete_query = f.read() 
+    with open(QUERIES_PATH / 'upsert_car_sales_dataset.sql', 'r' ) as f_ups: 
+        upsert_query = f_ups.read()
 
     sales_data = sales_data \
                     .select('sale_id', 
@@ -87,18 +85,15 @@ def load(sales_data: duckdb.DuckDBPyRelation, parquet_filename: str = None) -> N
                             'sale_price_normalized',
                             'sale_price_normalized_currency',
                             'exchange_rate_date',
-                            'transaction_date') \
-                    .limit(100)
+                            'transaction_date')
     
     # Batch insert per 1000 items
     while True:
         data = sales_data.fetchmany(1000)
         if not data:
             break
-        # Sqlite doesn't support INSERT ON CONFLICT DO UPDATE, so delete first then insert again to avoid duplication
-        db_destination_conn.executemany(delete_query, [(i[0],) for i in data])
-        db_destination_conn.executemany(insert_query, data)
-        db_destination_conn.commit()
+        # Sqlite upsert via Sqlite API. Doesn't work with Duckdb's .executemany method
+        db_destination.executemany(upsert_query, data)
         print(f'added {len(data)} items')
 
     if parquet_filename:

@@ -1,5 +1,6 @@
-from code.settings import BASE_PATH, DATA_PATH, db_source_conn, db_destination_conn, EXCHANGE_RATE_API_KEY
+from code.settings import BASE_PATH, DATA_PATH, EXCHANGE_RATE_API_KEY, duckdb_conn
 from code.loggers import logger
+from code.connections import db_source, db_destination
 import requests
 import json
 from psycopg.sql import SQL, Identifier, Placeholder
@@ -18,10 +19,10 @@ class PlaceholderSign(Enum):
 
 def close_databases(commit: bool = False):
     if commit:
-        db_source_conn.commit()
-        db_destination_conn.commit()
-    db_source_conn.close()
-    db_destination_conn.close()
+        db_source.conn.commit()
+        db_destination.conn.commit()
+    db_source.close()
+    db_destination.close()
 
 
 def get_currency_exchange_rate(target_currency_code: str = 'USD'):
@@ -58,8 +59,8 @@ def get_currency_exchange_rate_as_df(target_currency_code: str = 'USD') -> duckd
     last_updated_at = datetime.fromtimestamp(res['time_last_update_unix'], tz=UTC)
     schema = ['code', 'rate']
     rows = [[code, rate] for code, rate in res['conversion_rates'].items()]
-    exchange_list_df = pl.DataFrame(rows, schema=schema, orient='row')
-    exchange_list_df = db_source_conn.sql('select * from exchange_list_df')
+    exchange_list_df = pl.DataFrame(rows, schema=schema, orient='row').to_arrow()
+    exchange_list_df = duckdb_conn.from_arrow(exchange_list_df)
     exchange_list_df = exchange_list_df.select(Expression('*'), ConstantExpression(last_updated_at).alias('updated_at'))
     return exchange_list_df
     

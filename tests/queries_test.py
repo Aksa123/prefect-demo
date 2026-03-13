@@ -3,13 +3,10 @@ from datetime import datetime, timedelta, UTC
 from time import sleep, perf_counter
 import duckdb
 from duckdb import Expression, ConstantExpression
-from code.settings import BASE_PATH, DATA_PATH, QUERIES_PATH, EXCHANGE_RATE_API_KEY, db_source_conn, db_destination_conn
+from code.settings import BASE_PATH, QUERIES_PATH, duckdb_conn
 from code.utils import get_currency_exchange_rate_from_file
-import requests
-import json
-from prefect import get_run_logger
+from code.connections import db_source, db_destination
 import polars as pl
-from polars import Expr
 
 
 
@@ -30,14 +27,14 @@ class TestQueries(unittest.TestCase):
         with open(query_path, 'r') as f:
             query = f.read()
         
-        sales_data_df = db_source_conn \
-                        .sql(query, params=[date_start, date_end])
-        
-        sales_data_df.write_parquet(get_path_name('sales_data_df.parquet'))
+        sales_data_df = db_source.fetch_to_duckdb(query, parameters=[date_start, date_end])
+        # sales_data_df.write_parquet(get_path_name('sales_data_df.parquet'))
+        duckdb_conn.register('sales_data_df', sales_data_df)
     
 
     def test_normalize_currency(self):
-        sales_data = db_source_conn.read_parquet(BASE_PATH.joinpath('tests', 'sales_data_df.parquet').__str__())
+        # sales_data = duckdb_conn.read_parquet(BASE_PATH.joinpath('tests', 'sales_data_df.parquet').__str__())
+        sales_data = duckdb_conn.sql('select * from sales_data_df')
         target_currency_code = 'USD'
 
         # Dummy exchange list
@@ -49,7 +46,7 @@ class TestQueries(unittest.TestCase):
         exchange_list_df = pl.DataFrame(rows, schema=schema, orient='row')
         
         # Make sure datasets are in the same DB connection (db_source) so they can be joined
-        exchange_list_df = db_source_conn.sql('select * from exchange_list_df')
+        exchange_list_df = duckdb_conn.sql('select * from exchange_list_df')
 
         sales_normalized = sales_data.set_alias('sales') \
                             .join(
@@ -62,12 +59,14 @@ class TestQueries(unittest.TestCase):
                                 ConstantExpression(target_currency_code).alias('sale_price_normalized_currency'),
                                 ConstantExpression(last_updated_at).alias('exchange_rate_date'))
         
-        sales_normalized.write_parquet(get_path_name('sales_normalized.parquet'))                  
+        # sales_normalized.write_parquet(get_path_name('sales_normalized.parquet'))
+        duckdb_conn.register('sales_normalized', sales_normalized)              
 
 
     def test_remove_invalid_data(self):
-        sales_normalized = duckdb.read_parquet(BASE_PATH.joinpath('tests', 'sales_normalized.parquet').__str__())
-        sales_data_validated = sales_normalized \
+        # sales_normalized = duckdb_conn.read_parquet(BASE_PATH.joinpath('tests', 'sales_normalized.parquet').__str__())
+        sales_normalized = duckdb_conn.sql('select * from sales_normalized')
+        sales_validated = sales_normalized \
                         .filter(Expression('sale_price').__gt__(0)) \
                         .filter(Expression('brand_id').isnotnull()) \
                         .filter(Expression('car_id').isnotnull()) \
@@ -75,46 +74,9 @@ class TestQueries(unittest.TestCase):
                         .filter(Expression('sale_price_normalized').__gt__(0)) \
                         .filter(Expression('sale_price_normalized_currency').__ne__(ConstantExpression('')))
                 
-        self.assertLessEqual(sales_data_validated.__len__(), sales_normalized.__len__())
-
-        sales_data_validated.write_parquet(get_path_name('sales_validated.parquet'))
-
-
-    def test_load(self):
-        sales_data = duckdb.read_parquet(get_path_name('sales_validated.parquet'))
-        with open(QUERIES_PATH.joinpath('upsert_car_sales_dataset.sql'), 'r' ) as f:
-            insert_query = f.read()
-        with open(QUERIES_PATH.joinpath('delete_car_sales_dataset.sql'), 'r' ) as f:
-            delete_query = f.read() 
-
-        sales_data = sales_data.select('sale_id', 
-                                    'brand_id', 
-                                    'brand_name', 
-                                    'car_id',
-                                    'car_name',
-                                    'sale_price',
-                                    'currency_id',
-                                    'currency_name',
-                                    'sale_price_normalized',
-                                    'sale_price_normalized_currency',
-                                    'exchange_rate_date',
-                                    'transaction_date')
-        min_date = sales_data.min('transaction_date').fetchone()[0].strftime('%Y%m%d')
-        max_date = sales_data.max('transaction_date').fetchone()[0].strftime('%Y%m%d')
+        self.assertLessEqual(sales_validated.__len__(), sales_normalized.__len__())
+        duckdb_conn.register('sales_validated', sales_validated)
         
-        # Batch insert per 1000 items
-        # while True:
-        #     data = sales_data.fetchmany(1000)
-        #     if not data:
-        #         break
-        #     # Sqlite doesn't support INSERT ON CONFLICT DO UPDATE, so delete first then insert again
-        #     db_destination_conn.executemany(delete_query, [(i[0],) for i in data])
-        #     db_destination_conn.executemany(insert_query, data)
-        #     db_destination_conn.commit()
-
-        sales_data.write_parquet(get_path_name(f'car_sales_dataset__{min_date}-{max_date}.parquet'))
-
-
         
 if __name__ == '__main__':
     unittest.main()

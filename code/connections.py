@@ -1,7 +1,7 @@
 from pathlib import Path
 from time import sleep
 import sqlite3
-from code.settings import DATA_PATH
+from code.settings import DATA_PATH, duckdb_conn
 import polars as pl
 import duckdb
 
@@ -54,14 +54,19 @@ class DBConnection:
             return inner
         return outer
     
-    def fetch_to_duckdb(self, duck_conn: duckdb.DuckDBPyConnection, sql: str, parameters: list = None) -> duckdb.DuckDBPyRelation:
+    def fetch_to_arrow(self, sql: str, parameters: list = None):
         if parameters != None:
             opts = {'parameters': parameters}
         else:
             opts = None
         df = pl.read_database(query=sql, connection=self, execute_options=opts).to_arrow()
-        return duck_conn.from_arrow(df)
+        return df
 
+    def fetch_to_duckdb(self, sql: str, parameters: list = None) -> duckdb.DuckDBPyRelation:
+        df = self.fetch_to_arrow(sql, parameters)
+        return duckdb_conn.from_arrow(df)
+
+    
 
 db_source = DBConnection(DATA_PATH / 'sources' / 'db_source.db')
 db_destination = DBConnection(DATA_PATH / 'destinations' / 'db_destination.db')

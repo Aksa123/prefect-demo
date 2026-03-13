@@ -3,15 +3,16 @@ from prefect.logging import get_run_logger
 from prefect.cache_policies import TASK_SOURCE, INPUTS, NO_CACHE
 from prefect.futures import wait
 from prefect.docker import DockerImage
+from psycopg.sql import SQL, Identifier
 import duckdb
 from duckdb import Expression, ConstantExpression
 import polars as pl
 from datetime import datetime, timedelta, UTC
-from code.settings import BASE_PATH, DATA_PATH, QUERIES_PATH, EXCHANGE_RATE_API_KEY, db_source_conn, db_destination_conn
+from code.settings import BASE_PATH, DATA_PATH, QUERIES_PATH, EXCHANGE_RATE_API_KEY, duckdb_conn
 from code.loggers import logger
 from code.pipelines.state_handlers import completion_handler, failure_handler
 from code.utils import get_currency_exchange_rate_as_df, generate_upsert_query, generate_insert_query, generate_delete_query
-from psycopg.sql import SQL, Identifier
+from code.connections import db_source, db_destination
 
 
 
@@ -20,7 +21,7 @@ from psycopg.sql import SQL, Identifier
 @task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
 def extract_table_data_by_dates(table_name: str, date_start: datetime, date_end: datetime) -> duckdb.DuckDBPyRelation:
     query = SQL("select * from {} where coalesce(updated_at, created_at) between ? and ?").format(Identifier(table_name)).as_string()
-    data = db_source_conn.sql(query, params=[date_start, date_end])
+    data = db_source.fetch_to_duckdb(query, parameters=[date_start, date_end])
     return data
 
 
@@ -30,25 +31,15 @@ def load_table(table_name: str, pk_column_names: list[str], data: duckdb.DuckDBP
         print('empty')
         return
     
-    # In production e.g. with Postgres db we can simply use UPSERT query
-    # Somehow SQLite doesn't work with UPSERT here
-    insert_query = generate_insert_query(table_name, data.columns)
-    delete_query = generate_delete_query(table_name, pk_column_names)
-    # Find out index that contains pk/unique
-    pk_index = []
-    for n, p in enumerate(data.columns):
-        if p in pk_column_names:
-            pk_index.append(n)
-    
+    upsert_query = generate_upsert_query(table_name, pk_column_names, data.columns)
+
     # Batch insert per 1000 items
     while True:
         items = data.fetchmany(1000)
         if not items:
             break
-        # Sqlite doesn't support INSERT ON CONFLICT DO UPDATE, so delete first then insert again to avoid duplication
-        db_destination_conn.executemany(delete_query, [ [i[k] for k in pk_index] for i in items ])
-        db_destination_conn.executemany(insert_query, items)
-        db_destination_conn.commit()
+        # Upsert via Sqlite API
+        db_destination.executemany(upsert_query, items)
         print(f'added {len(items)} items')
 
 
@@ -57,7 +48,7 @@ def load_table(table_name: str, pk_column_names: list[str], data: duckdb.DuckDBP
 def transform_dimension_car_detail(date_start: datetime, date_end: datetime):
     with open(BASE_PATH / 'code' / 'queries' / 'dimension_car_detail.sql', 'r' ) as f:
         query = f.read()
-    data = db_destination_conn.sql(query, params=[date_start, date_end, date_start, date_end, date_start, date_end])
+    data = db_destination.fetch_to_duckdb(query, parameters=[date_start, date_end, date_start, date_end, date_start, date_end])
     load_table('dimension_car_detail', ['id'], data)
 
 
@@ -65,7 +56,7 @@ def transform_dimension_car_detail(date_start: datetime, date_end: datetime):
 def transform_fact_car_sales_dataset(date_start: datetime, date_end: datetime):
     with open(BASE_PATH / 'code' / 'queries' / 'fact_car_sales_dataset.sql', 'r' ) as f:
         query = f.read()
-    data = db_destination_conn.sql(query, params=[date_start, date_end])
+    data = db_destination.fetch_to_duckdb(query, parameters=[date_start, date_end])
     load_table('fact_car_sales_dataset', ['sale_id'], data)
 
 
