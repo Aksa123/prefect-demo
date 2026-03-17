@@ -25,3 +25,14 @@ class TestQueries(unittest.TestCase):
         ddf = db_source.fetch_to_duckdb(sql='select * from brands where id = ?', parameters=[3])
         self.assertEqual(ddf.select('id', 'name').fetchone(), (3, 'Tesla') )
         
+    def test_execute(self):
+        res = db_source.execute(sql='select 10, True').fetchone()
+        self.assertEqual(res, (10, True))
+
+    def test_rec(self):
+        res1 = db_source.execute(sql='select 10, True')
+        self.assertIsNotNone(res1)
+        db_source.close()
+        db_source.reconnect()
+        res2 = db_source.execute(sql='select 10, True')
+        self.assertIsNotNone(res2)

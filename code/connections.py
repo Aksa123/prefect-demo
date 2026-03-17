@@ -4,19 +4,12 @@ import sqlite3
 from code.settings import DATA_PATH, duckdb_conn
 import polars as pl
 import duckdb
-
+from typing import Self
 
 class DBConnection:
     def __init__(self, path: Path | str ):
         self.path = path
         self.conn = sqlite3.connect(self.path)
-
-        self.execute = self.exc_wrapper(self.conn.execute)
-        self.executemany = self.exc_wrapper(self.conn.executemany)
-
-        retries = self.retry_wrapper(5, 2)
-        self.execute = retries(self.execute)
-        self.executemany = retries(self.executemany)
 
     def reconnect(self):
         self.conn.close()
@@ -25,24 +18,26 @@ class DBConnection:
     def close(self):
         self.conn.close()
         
-    def exc_wrapper(self, func):
-        def inner(sql: str, parameters=None):
+    def exc_wrapper(func):
+        def inner(self: Self, sql: str, parameters=[]):
             # Auto-rollback upon failure
             try:
-                res = func(sql, parameters)
+                res = func(self, sql, parameters)
                 self.conn.commit()
                 return res
+            except sqlite3.ProgrammingError as perr:
+                self.reconnect()
             except Exception as err:
                 self.conn.rollback()
                 raise err
         return inner
     
-    def retry_wrapper(self, count: int = 5, delay: int = 2):
+    def retry_wrapper(count: int = 5, delay: int = 2):
         def outer(func):
-            def inner(sql: str, parameters: list = None):
+            def inner(self: Self, sql: str, parameters: list = []):
                 for i in range(1, count+1):
                     try:
-                        res = func(sql, parameters)
+                        res = func(self, sql, parameters)
                         return res
                     # Only retry for connection-specific issues e.g. OperationalError
                     except sqlite3.OperationalError as operr:
@@ -66,6 +61,16 @@ class DBConnection:
         df = self.fetch_to_arrow(sql, parameters)
         return duckdb_conn.from_arrow(df)
 
+    @retry_wrapper(5,2)
+    @exc_wrapper
+    def execute(self, sql: str, parameters=[]):
+        return self.conn.execute(sql, parameters)
+    
+    @retry_wrapper(5,2)
+    @exc_wrapper
+    def executemany(self, sql: str, parameters=[]):
+        return self.conn.executemany(sql, parameters)
+    
     
 
 db_source = DBConnection(DATA_PATH / 'sources' / 'db_source.db')

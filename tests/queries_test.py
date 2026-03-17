@@ -60,7 +60,7 @@ class TestQueries(unittest.TestCase):
                                 ConstantExpression(last_updated_at).alias('exchange_rate_date'))
         
         # sales_normalized.write_parquet(get_path_name('sales_normalized.parquet'))
-        duckdb_conn.register('sales_normalized', sales_normalized)              
+        duckdb_conn.register('sales_normalized', sales_normalized) 
 
 
     def test_remove_invalid_data(self):
