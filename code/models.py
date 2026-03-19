@@ -6,6 +6,10 @@ from code.settings import DATA_PATH
 from code.connections import db_source, db_destination
 import json
 
+###
+#   Currently unused, please ignore
+#   This may prove useful for cumulative/incremental ETL model
+###
 
 
 dest_db = SqliteDatabase(DATA_PATH / 'destinations' / 'db_destination.db', pragmas={'foreign_key': 'ON'})
