@@ -1,15 +1,12 @@
 from prefect import flow, task
-from prefect.logging import get_run_logger
 from prefect.cache_policies import TASK_SOURCE, INPUTS, NO_CACHE
-from prefect.docker import DockerImage
 import duckdb
 from duckdb import Expression, ConstantExpression
-import polars as pl
-from datetime import datetime, timedelta, UTC
-from code.settings import BASE_PATH, DATA_PATH, QUERIES_PATH, EXCHANGE_RATE_API_KEY, duckdb_conn
+from datetime import datetime
+from code.settings import DATA_PATH, QUERIES_PATH
 from code.loggers import logger
 from code.pipelines.state_handlers import completion_handler, failure_handler
-from code.utils import get_currency_exchange_rate, get_currency_exchange_rate_from_file
+from code.utils import get_currency_exchange_rate_as_df
 from code.connections import db_source, db_destination
 
 
@@ -26,19 +23,11 @@ def extract_sales_data(date_start: datetime, date_end: datetime) -> duckdb.DuckD
     
 
 @task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
-def normalize_currency(sales_data: duckdb.DuckDBPyRelation, target_currency_code:str='USD') -> duckdb.DuckDBPyRelation:
+def normalize_currency(sales_data: duckdb.DuckDBPyRelation, target_currency_code: str = 'USD') -> duckdb.DuckDBPyRelation:
     """Normalize sale price e.g. to USD"""
     # For testing purpose, get the API response from file
-    if not EXCHANGE_RATE_API_KEY:
-        exchange_list = get_currency_exchange_rate_from_file(target_currency_code=target_currency_code)
-    else:
-        exchange_list = get_currency_exchange_rate(target_currency_code=target_currency_code)
-    last_updated_at = datetime.fromtimestamp(exchange_list['time_last_update_unix'], tz=UTC)
-
-    rows = [[code, rate] for code, rate in exchange_list['conversion_rates'].items()]
-    schema = ['code', 'rate']
-    exchange_list_df = pl.DataFrame(rows, schema=schema, orient='row').to_arrow()
-    exchange_list_df = duckdb_conn.from_arrow(exchange_list_df)
+    exchange_list_df = get_currency_exchange_rate_as_df(target_currency_code='USD')
+    exchange_last_updated_at = exchange_list_df.select('updated_at').fetchone()[0]
 
     sales_normalized = sales_data.set_alias('sales') \
                         .join(
@@ -49,7 +38,7 @@ def normalize_currency(sales_data: duckdb.DuckDBPyRelation, target_currency_code
                             Expression('*'), 
                             Expression('sales.sale_price').__div__(Expression('exchange.rate')).alias('sale_price_normalized'),
                             ConstantExpression(target_currency_code).alias('sale_price_normalized_currency'),
-                            ConstantExpression(last_updated_at).alias('exchange_rate_date'))                     
+                            ConstantExpression(exchange_last_updated_at).alias('exchange_rate_date'))                     
     
     return sales_normalized
 

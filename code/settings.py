@@ -1,6 +1,5 @@
 from dotenv import dotenv_values
 import duckdb
-import polars as pl
 from pathlib import Path
 
 

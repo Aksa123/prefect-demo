@@ -13,8 +13,9 @@ import polars as pl
 
 
 class PlaceholderSign(Enum):
-    POSTGRES = '%s'
-    SQLITE = '?'
+    """Python DB API 2.0 standard: https://peps.python.org/pep-0249/#paramstyle"""
+    FORMAT = '%s'
+    QMARK = '?'
 
 
 def close_databases(commit: bool = False):
@@ -66,7 +67,7 @@ def get_currency_exchange_rate_as_df(target_currency_code: str = 'USD') -> duckd
     
 
 
-def generate_upsert_query(table_name: str, pk_column_names: list[str], column_list: list[str], placeholder_sign: PlaceholderSign = PlaceholderSign.SQLITE) -> str:
+def generate_upsert_query(table_name: str, pk_column_names: list[str], column_list: list[str], placeholder_sign: PlaceholderSign = PlaceholderSign.QMARK) -> str:
     query = SQL("insert into {} ({}) values ({}) on conflict ({}) do update set {}") \
                 .format(
                     Identifier(table_name),
@@ -78,7 +79,7 @@ def generate_upsert_query(table_name: str, pk_column_names: list[str], column_li
     return query.as_string()
 
 
-def generate_insert_query(table_name: str, column_list: list[str], placeholder_sign: PlaceholderSign = PlaceholderSign.SQLITE) -> str:
+def generate_insert_query(table_name: str, column_list: list[str], placeholder_sign: PlaceholderSign = PlaceholderSign.QMARK) -> str:
     query = SQL("insert into {} ({}) values ({})") \
                 .format(
                     Identifier(table_name),
@@ -88,7 +89,7 @@ def generate_insert_query(table_name: str, column_list: list[str], placeholder_s
     return query.as_string()
 
 
-def generate_delete_query(table_name: str, pk_column_names: list[str], placeholder_sign: PlaceholderSign = PlaceholderSign.SQLITE) -> str:
+def generate_delete_query(table_name: str, pk_column_names: list[str], placeholder_sign: PlaceholderSign = PlaceholderSign.QMARK) -> str:
     """Delete by primary keys / unique columns"""
     query = SQL("delete from {} where {}") \
                 .format(

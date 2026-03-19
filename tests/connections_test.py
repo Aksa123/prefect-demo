@@ -29,7 +29,7 @@ class TestQueries(unittest.TestCase):
         res = db_source.execute(sql='select 10, True').fetchone()
         self.assertEqual(res, (10, True))
 
-    def test_rec(self):
+    def test_reconnect(self):
         res1 = db_source.execute(sql='select 10, True')
         self.assertIsNotNone(res1)
         db_source.close()

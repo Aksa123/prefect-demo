@@ -1,8 +1,5 @@
 from prefect import flow, task
-from prefect.logging import get_run_logger
 from prefect.cache_policies import TASK_SOURCE, INPUTS, NO_CACHE
-from prefect.futures import wait
-from prefect.docker import DockerImage
 from psycopg.sql import SQL, Identifier
 import duckdb
 from duckdb import Expression, ConstantExpression
@@ -11,7 +8,7 @@ from datetime import datetime, timedelta, UTC
 from code.settings import BASE_PATH, DATA_PATH, QUERIES_PATH, EXCHANGE_RATE_API_KEY, duckdb_conn
 from code.loggers import logger
 from code.pipelines.state_handlers import completion_handler, failure_handler
-from code.utils import get_currency_exchange_rate_as_df, generate_upsert_query, generate_insert_query, generate_delete_query
+from code.utils import get_currency_exchange_rate_as_df, generate_upsert_query
 from code.connections import db_source, db_destination
 
 
@@ -26,7 +23,7 @@ def extract_table_data_by_dates(table_name: str, date_start: datetime, date_end:
 
 
 @task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
-def load_table(table_name: str, pk_column_names: list[str], data: duckdb.DuckDBPyRelation) -> None:
+def load_table(table_name: str, pk_column_names: list[str], data: duckdb.DuckDBPyRelation, batch_limit: int = 1000) -> None:
     if data.__len__() == 0:
         print('empty')
         return
@@ -35,7 +32,7 @@ def load_table(table_name: str, pk_column_names: list[str], data: duckdb.DuckDBP
 
     # Batch insert per 1000 items
     while True:
-        items = data.fetchmany(1000)
+        items = data.fetchmany(batch_limit)
         if not items:
             break
         # Upsert via Sqlite API
