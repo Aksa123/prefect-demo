@@ -20,13 +20,11 @@ class DBConnection:
         
     def exc_wrapper(func):
         def inner(self: Self, sql: str, parameters=[]):
-            # Auto-rollback upon failure
+            # Auto-commit & rollback upon failure
             try:
                 res = func(self, sql, parameters)
                 self.conn.commit()
                 return res
-            except sqlite3.ProgrammingError as perr:
-                self.reconnect()
             except Exception as err:
                 self.conn.rollback()
                 raise err
@@ -35,17 +33,23 @@ class DBConnection:
     def retry_wrapper(count: int = 5, delay: int = 2):
         def outer(func):
             def inner(self: Self, sql: str, parameters: list = []):
+                last_err = None
                 for i in range(1, count+1):
                     try:
                         res = func(self, sql, parameters)
                         return res
                     # Only retry for connection-specific issues e.g. OperationalError
-                    except sqlite3.OperationalError as operr:
+                    except (sqlite3.OperationalError, sqlite3.InternalError) as operr:
                         print(f'error occurred. reconnecting database and retrying transaction... ( {i} / {count} )')
                         sleep(delay)
-                        self.reconnect()
+                        try:
+                            self.reconnect()
+                            print('reconnected!')
+                        except sqlite3.OperationalError:
+                            pass
+                        last_err = operr
                 print('retry attempt limit reached >_>')
-                raise operr
+                raise last_err
             return inner
         return outer
     
