@@ -1,10 +1,12 @@
 from pathlib import Path
+from typing import Self
 from time import sleep
-import sqlite3
-from code.settings import DATA_PATH, duckdb_conn
 import polars as pl
 import duckdb
-from typing import Self
+import sqlite3
+from code.settings import DATA_PATH, duckdb_conn
+from code.loggers import logger
+
 
 class DBConnection:
     def __init__(self, path: Path | str ):
@@ -40,15 +42,15 @@ class DBConnection:
                         return res
                     # Only retry for connection-specific issues e.g. OperationalError
                     except (sqlite3.OperationalError, sqlite3.InternalError) as operr:
-                        print(f'error occurred. reconnecting database and retrying transaction... ( {i} / {count} )')
+                        logger.error(f'error occurred. reconnecting database and retrying transaction... ( {i} / {count} )')
                         sleep(delay)
                         try:
                             self.reconnect()
-                            print('reconnected!')
+                            logger.info('reconnected!')
                         except sqlite3.OperationalError:
                             pass
                         last_err = operr
-                print('retry attempt limit reached >_>')
+                logger.error('retry attempt limit reached >_>')
                 raise last_err
             return inner
         return outer

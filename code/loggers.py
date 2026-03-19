@@ -1,7 +1,7 @@
+import sys, time
 from datetime import datetime, timedelta, timezone, UTC
 from logging import Logger, Formatter, Handler, FileHandler, StreamHandler
-import os, sys, time
-from code.settings import BASE_PATH, LIMIT_LOG_WRITES_PER_HOUR
+from code.settings import LOG_FILE_PATH, LIMIT_LOG_WRITES_PER_HOUR
 
 
 
@@ -44,7 +44,7 @@ class LoggerFile(Logger):
 formatter = Formatter(fmt="%(asctime)s WIB %(levelname)s %(pathname)s:%(lineno)d - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", defaults={'consumer': 'Prefect App'})
 formatter.__setattr__("converter", lambda s: time.gmtime(s + 7*3600))       # Explicitly set to WIB (Asia/Jakarta)
 
-handler_file = FileHandler(filename=f"{BASE_PATH}/logs.log", mode="a")
+handler_file = FileHandler(filename=LOG_FILE_PATH, mode="a")
 handler_file.setFormatter(formatter)
 handler_file.setLevel(20)
 

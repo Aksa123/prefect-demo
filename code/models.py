@@ -8,7 +8,7 @@ import json
 
 ###
 #   Currently unused, please ignore
-#   This may prove useful for cumulative/incremental ETL model
+#   This may prove useful for future cumulative/incremental ETL pipelines
 ###
 
 

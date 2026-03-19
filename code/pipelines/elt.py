@@ -1,16 +1,13 @@
 from prefect import flow, task
-from prefect.cache_policies import TASK_SOURCE, INPUTS, NO_CACHE
+from prefect.cache_policies import NO_CACHE
 from psycopg.sql import SQL, Identifier
-import duckdb
-from duckdb import Expression, ConstantExpression
-import polars as pl
-from datetime import datetime, timedelta, UTC
-from code.settings import BASE_PATH, DATA_PATH, QUERIES_PATH, EXCHANGE_RATE_API_KEY, duckdb_conn
+from datetime import datetime
+from code.settings import BASE_PATH
 from code.loggers import logger
 from code.pipelines.state_handlers import completion_handler, failure_handler
 from code.utils import get_currency_exchange_rate_as_df, generate_upsert_query
 from code.connections import db_source, db_destination
-
+import duckdb
 
 
 # No cache because DuckDBPyRelation is always bound to a DB connection
@@ -25,7 +22,7 @@ def extract_table_data_by_dates(table_name: str, date_start: datetime, date_end:
 @task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
 def load_table(table_name: str, pk_column_names: list[str], data: duckdb.DuckDBPyRelation, batch_limit: int = 1000) -> None:
     if data.__len__() == 0:
-        print('empty')
+        logger.debug('empty')
         return
     
     upsert_query = generate_upsert_query(table_name, pk_column_names, data.columns)
@@ -37,7 +34,7 @@ def load_table(table_name: str, pk_column_names: list[str], data: duckdb.DuckDBP
             break
         # Upsert via Sqlite API
         db_destination.executemany(upsert_query, items)
-        print(f'added {len(items)} items')
+        logger.debug(f'added {len(items)} items')
 
 
 # In ELT model, we can just perform transformations in the datawarehouse/destination side
