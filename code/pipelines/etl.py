@@ -1,6 +1,5 @@
 from prefect import flow, task
-from prefect.cache_policies import TASK_SOURCE, INPUTS, NO_CACHE
-import duckdb
+from prefect.cache_policies import NO_CACHE
 from duckdb import Expression, ConstantExpression
 from datetime import datetime
 from code.settings import DATA_PATH, QUERIES_PATH
@@ -8,6 +7,7 @@ from code.loggers import logger
 from code.pipelines.state_handlers import completion_handler, failure_handler
 from code.utils import get_currency_exchange_rate_as_df
 from code.connections import db_source, db_destination
+import duckdb
 
 
 # No cache because DuckDBPyRelation is always bound to a DB connection
@@ -83,7 +83,7 @@ def load(sales_data: duckdb.DuckDBPyRelation, parquet_filename: str = None) -> N
             break
         # Sqlite upsert via Sqlite API. Doesn't work with Duckdb's .executemany method
         db_destination.executemany(upsert_query, data)
-        print(f'added {len(data)} items')
+        logger.debug(f'added {len(data)} items')
 
     if parquet_filename:
         if not parquet_filename.endswith('.parquet'):
