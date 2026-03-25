@@ -6,11 +6,11 @@ from code.settings import DATA_PATH
 from code.connections import db_source, db_destination
 import json
 
+
 ###
 #   Currently unused, please ignore
 #   This may prove useful for future cumulative/incremental ETL pipelines
 ###
-
 
 dest_db = SqliteDatabase(DATA_PATH / 'destinations' / 'db_destination.db', pragmas={'foreign_key': 'ON'})
 
@@ -73,7 +73,6 @@ class BaseModel(Model):
             return super().update(data, **update)
         return super().update(data, **update)
     
-
     @classmethod
     def get_update_expression(cls, insert):
         cols = cls._meta.columns

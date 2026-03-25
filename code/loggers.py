@@ -8,11 +8,6 @@ from code.settings import LOG_FILE_PATH, LIMIT_LOG_WRITES_PER_HOUR
 # Asia/Jakarta timezone i.e. GMT+7
 wib_tz = timezone(timedelta(hours=7), name='Asia/Jakarta, WIB')
 
-class DbHandler(Handler):
-    def emit(self, record):
-        pass
-        # Log.create(level=record.levelname, file=record.filename + " - line " + str(record.lineno), message=record.exc_text or record.msg, created_at=record.asctime)
-
 class LoggerFile(Logger):
     def __init__(self, name: str, level = 20, handlers=[]) -> None:
         super().__init__(name, level)
@@ -39,6 +34,13 @@ class LoggerFile(Logger):
     @check_counter
     def critical(self, msg, stacklevel=2, exc_info=True):
         super().critical(msg=msg, exc_info=exc_info, stacklevel=stacklevel)
+
+
+class DbHandler(Handler):
+    """Save logs in a database"""
+    def emit(self, record):
+        pass
+        # Log.create(level=record.levelname, file=record.filename + " - line " + str(record.lineno), message=record.exc_text or record.msg, created_at=record.asctime)
 
 
 formatter = Formatter(fmt="%(asctime)s WIB %(levelname)s %(pathname)s:%(lineno)d - %(message)s", datefmt="%Y-%m-%d %H:%M:%S", defaults={'consumer': 'Prefect App'})
