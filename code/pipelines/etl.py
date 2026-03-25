@@ -1,64 +1,67 @@
 from prefect import flow, task
-from prefect.cache_policies import NO_CACHE
+from prefect.cache_policies import NO_CACHE, INPUTS
 from duckdb import Expression, ConstantExpression
-from datetime import datetime
+from datetime import datetime, timedelta
 from code.settings import DATA_PATH, QUERIES_PATH
 from code.loggers import logger
 from code.pipelines.state_handlers import completion_handler, failure_handler
-from code.utils import get_currency_exchange_rate_as_df
+from code.utils import get_currency_exchange_rate_as_polars, batch_operation
 from code.connections import db_source, db_destination
-import duckdb
+import polars as pl
 
 
-# No cache because DuckDBPyRelation is always bound to a DB connection
-# If need to cache then must fetch first e.g. to DataFrame
-@task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
-def extract_sales_data(date_start: datetime, date_end: datetime) -> duckdb.DuckDBPyRelation:
+
+# Cache data retrieved for 7 days, based on input parameters
+# NOTE: the fetched data must be idempotent to avoid data inconsistency!
+@task(retries=2, retry_delay_seconds=5, on_failure=[failure_handler], cache_policy=INPUTS, cache_expiration=timedelta(days=7))
+def extract_sales_data(date_start: datetime, date_end: datetime) -> pl.DataFrame:
     query_path = QUERIES_PATH.joinpath('car_sales.sql')
     with open(query_path, 'r') as f:
         query = f.read()
     
-    sales_data_df = db_source.fetch_to_duckdb(query, parameters=[date_start, date_end])
+    sales_data_df = db_source.fetch_to_polars(query, parameters=[date_start, date_end])
     return sales_data_df
     
 
-@task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
-def normalize_currency(sales_data: duckdb.DuckDBPyRelation, target_currency_code: str = 'USD') -> duckdb.DuckDBPyRelation:
+@task(retries=2, retry_delay_seconds=5, on_failure=[failure_handler], cache_policy=INPUTS, cache_expiration=timedelta(days=7))
+def normalize_currency(sales_data: pl.DataFrame, target_currency_code: str = 'USD') -> pl.DataFrame:
     """Normalize sale price e.g. to USD"""
     # For testing purpose, get the API response from file
-    exchange_list_df = get_currency_exchange_rate_as_df(target_currency_code='USD')
-    exchange_last_updated_at = exchange_list_df.select('updated_at').fetchone()[0]
+    exchange_list_df = get_currency_exchange_rate_as_polars(target_currency_code='USD')
+    exchange_last_updated_at = exchange_list_df.select(pl.col('updated_at')).max().item()
 
-    sales_normalized = sales_data.set_alias('sales') \
+    sales_data = sales_data.with_columns(pl.col('*'), pl.col('currency_name').alias('code'))
+
+    sales_normalized = sales_data \
                         .join(
-                            exchange_list_df.set_alias('exchange'), 
-                            condition=Expression('sales.currency_name').__eq__(Expression('exchange.code')),
+                            exchange_list_df, 
+                            on='code',
                             how='inner') \
                         .select(
-                            Expression('*'), 
-                            Expression('sales.sale_price').__div__(Expression('exchange.rate')).alias('sale_price_normalized'),
-                            ConstantExpression(target_currency_code).alias('sale_price_normalized_currency'),
-                            ConstantExpression(exchange_last_updated_at).alias('exchange_rate_date'))                     
+                            pl.col('*'), 
+                            pl.col('sale_price').floordiv(pl.col('rate')).alias('sale_price_normalized'),
+                            pl.lit(target_currency_code).alias('sale_price_normalized_currency'),
+                            pl.lit(exchange_last_updated_at).alias('exchange_rate_date'))                     
     
     return sales_normalized
 
 
-@task(cache_policy=NO_CACHE, on_failure=[failure_handler])
-def remove_invalid_data(sales_data: duckdb.DuckDBPyRelation) -> duckdb.DuckDBPyRelation:    
+@task(retries=2, retry_delay_seconds=5, on_failure=[failure_handler], cache_policy=INPUTS, cache_expiration=timedelta(days=7))
+def remove_invalid_data(sales_data: pl.DataFrame) -> pl.DataFrame:    
     # Simulate data validation
     sales_data_validated = sales_data \
-                        .filter(Expression('sale_price').__gt__(0)) \
-                        .filter(Expression('brand_id').isnotnull()) \
-                        .filter(Expression('car_id').isnotnull()) \
-                        .filter(Expression('currency_id').isin(1,2,3,4)) \
-                        .filter(Expression('sale_price_normalized').__gt__(0)) \
-                        .filter(Expression('sale_price_normalized_currency').__ne__(ConstantExpression('')))
+                        .filter(pl.col('sale_price').__gt__(0)) \
+                        .filter(pl.col('brand_id').is_not_null()) \
+                        .filter(pl.col('car_id').is_not_null()) \
+                        .filter(pl.col('currency_id').is_in([1,2,3,4])) \
+                        .filter(pl.col('sale_price_normalized').__gt__(0)) \
+                        .filter(pl.col('sale_price_normalized_currency').__ne__(pl.lit('')))
     
     return sales_data_validated
 
 
 @task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
-def load(sales_data: duckdb.DuckDBPyRelation, parquet_filename: str = None) -> None:
+def load_to_destination(sales_data: pl.DataFrame) -> None:
     with open(QUERIES_PATH / 'upsert_car_sales_dataset.sql', 'r' ) as f_ups: 
         upsert_query = f_ups.read()
 
@@ -77,18 +80,14 @@ def load(sales_data: duckdb.DuckDBPyRelation, parquet_filename: str = None) -> N
                             'transaction_date')
     
     # Batch insert per 1000 items
-    while True:
-        data = sales_data.fetchmany(1000)
-        if not data:
-            break
-        # Sqlite upsert via Sqlite API. Doesn't work with Duckdb's .executemany method
-        db_destination.executemany(upsert_query, data)
-        logger.debug(f'added {len(data)} items')
+    batch_operation(db_destination, upsert_query, sales_data, 1000)
 
-    if parquet_filename:
-        if not parquet_filename.endswith('.parquet'):
-            parquet_filename = parquet_filename + '.parquet'
-        sales_data.write_parquet(DATA_PATH.joinpath('destinations', parquet_filename).__str__())
+
+@task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
+def load_to_parquet(sales_data: pl.DataFrame, parquet_filename: str):
+    if not parquet_filename.endswith('.parquet'):
+        parquet_filename = parquet_filename + '.parquet'
+    sales_data.write_parquet(DATA_PATH.joinpath('destinations', parquet_filename).__str__())
 
 
 @flow(name='demo-car-sales', on_completion=[completion_handler], on_failure=[failure_handler])
@@ -104,4 +103,5 @@ def run():
 
     min_date = date_start.strftime('%Y%m%d')
     max_date = date_end.strftime('%Y%m%d')
-    load(sales_validated, parquet_filename=f'car_sales_dataset__{min_date}-{max_date}.parquet')
+    load_to_destination(sales_validated)
+    load_to_parquet(sales_validated, parquet_filename=f'car_sales_dataset__{min_date}-{max_date}.parquet')
