@@ -1,26 +1,27 @@
 from prefect import flow, task
-from prefect.cache_policies import NO_CACHE
+from prefect.cache_policies import NO_CACHE, INPUTS
 from psycopg.sql import SQL, Identifier
-from datetime import datetime
+from datetime import datetime, timedelta
 from code.settings import BASE_PATH
 from code.loggers import logger
 from code.pipelines.state_handlers import completion_handler, failure_handler
-from code.utils import get_currency_exchange_rate_as_df, generate_upsert_query
+from code.utils import get_currency_exchange_rate_as_polars, generate_upsert_query, batch_operation
 from code.connections import db_source, db_destination
-import duckdb
+import polars as pl
 
 
-# No cache because DuckDBPyRelation is always bound to a DB connection
-# If need to cache then must fetch first e.g. to DataFrame
-@task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
-def extract_table_data_by_dates(table_name: str, date_start: datetime, date_end: datetime) -> duckdb.DuckDBPyRelation:
+
+# Cache data retrieved for 7 days, based on input parameters
+# NOTE: the fetched data must be idempotent to avoid data inconsistency!
+@task(retries=2, retry_delay_seconds=5, on_failure=[failure_handler], cache_policy=INPUTS, cache_expiration=timedelta(days=7))
+def extract_table_data_by_dates(table_name: str, date_start: datetime, date_end: datetime) -> pl.DataFrame:
     query = SQL("select * from {} where coalesce(updated_at, created_at) between ? and ?").format(Identifier(table_name)).as_string()
-    data = db_source.fetch_to_duckdb(query, parameters=[date_start, date_end])
+    data = db_source.fetch_to_polars(query, parameters=[date_start, date_end])
     return data
 
 
-@task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
-def load_table(table_name: str, pk_column_names: list[str], data: duckdb.DuckDBPyRelation, batch_limit: int = 1000) -> None:
+@task(retries=2, retry_delay_seconds=5, on_failure=[failure_handler], cache_policy=NO_CACHE)
+def load_table(table_name: str, pk_column_names: list[str], data: pl.DataFrame) -> None:
     if data.__len__() == 0:
         logger.debug('empty')
         return
@@ -28,29 +29,23 @@ def load_table(table_name: str, pk_column_names: list[str], data: duckdb.DuckDBP
     upsert_query = generate_upsert_query(table_name, pk_column_names, data.columns)
 
     # Batch insert per 1000 items
-    while True:
-        items = data.fetchmany(batch_limit)
-        if not items:
-            break
-        # Upsert via Sqlite API
-        db_destination.executemany(upsert_query, items)
-        logger.debug(f'added {len(items)} items')
+    batch_operation(db_destination, upsert_query, data, 1000)
 
 
 # In ELT model, we can just perform transformations in the datawarehouse/destination side
-@task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
+@task(retries=2, retry_delay_seconds=5, on_failure=[failure_handler], cache_policy=NO_CACHE)
 def transform_dimension_car_detail(date_start: datetime, date_end: datetime):
     with open(BASE_PATH / 'code' / 'queries' / 'dimension_car_detail.sql', 'r' ) as f:
         query = f.read()
-    data = db_destination.fetch_to_duckdb(query, parameters=[date_start, date_end, date_start, date_end, date_start, date_end])
+    data = db_destination.fetch_to_polars(query, parameters=[date_start, date_end, date_start, date_end, date_start, date_end])
     load_table('dimension_car_detail', ['id'], data)
 
 
-@task(retries=2, retry_delay_seconds=5, cache_policy=NO_CACHE, on_failure=[failure_handler])
+@task(retries=2, retry_delay_seconds=5, on_failure=[failure_handler], cache_policy=NO_CACHE)
 def transform_fact_car_sales_dataset(date_start: datetime, date_end: datetime):
     with open(BASE_PATH / 'code' / 'queries' / 'fact_car_sales_dataset.sql', 'r' ) as f:
         query = f.read()
-    data = db_destination.fetch_to_duckdb(query, parameters=[date_start, date_end])
+    data = db_destination.fetch_to_polars(query, parameters=[date_start, date_end])
     load_table('fact_car_sales_dataset', ['sale_id'], data)
 
 
@@ -83,7 +78,7 @@ def run():
     data_car_sales = extract_table_data_by_dates('car_sales', date_start, date_end)
     load_table('car_sales', ['id'], data_car_sales)
     
-    exchange_list = get_currency_exchange_rate_as_df('USD')
+    exchange_list = get_currency_exchange_rate_as_polars('USD')
     load_table('currency_rates', ['code'], exchange_list)
 
     transform_dimension_car_detail(date_start, date_end)

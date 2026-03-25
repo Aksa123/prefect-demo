@@ -55,14 +55,19 @@ class DBConnection:
             return inner
         return outer
     
-    def fetch_to_arrow(self, sql: str, parameters: list = None):
+    def fetch_to_polars(self, sql: str, parameters: list = None):
         if parameters != None:
             opts = {'parameters': parameters}
         else:
             opts = None
-        df = pl.read_database(query=sql, connection=self, execute_options=opts).to_arrow()
-        return df
+        polars_df = pl.read_database(query=sql, connection=self, execute_options=opts)
+        return polars_df
+    
+    def fetch_to_arrow(self, sql: str, parameters: list = None):
+        arrow_df = self.fetch_to_polars(sql, parameters).to_arrow()
+        return arrow_df 
 
+    # Currently Duckdb cannot directly fetch from Polars dataframe
     def fetch_to_duckdb(self, sql: str, parameters: list = None) -> duckdb.DuckDBPyRelation:
         df = self.fetch_to_arrow(sql, parameters)
         return duckdb_conn.from_arrow(df)

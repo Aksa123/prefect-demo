@@ -4,7 +4,7 @@ from time import sleep, perf_counter
 import duckdb
 from duckdb import Expression, ConstantExpression
 from code.settings import BASE_PATH, QUERIES_PATH, duckdb_conn
-from code.utils import get_currency_exchange_rate_from_file
+from code.utils import get_currency_exchange_rate_from_file, get_currency_exchange_rate_as_polars
 from code.connections import db_source, db_destination
 import polars as pl
 
@@ -76,6 +76,58 @@ class TestQueries(unittest.TestCase):
                 
         self.assertLessEqual(sales_validated.__len__(), sales_normalized.__len__())
         duckdb_conn.register('sales_validated', sales_validated)
+
+
+class TestWithPolars(unittest.TestCase):
+    def test_start(self):
+        self.assertTrue(1)
+    
+    def test_extract(self):
+        last_year = datetime.now().year - 1
+        date_start = datetime(year=last_year, month=1, day=1)
+        date_end = datetime(year=last_year, month=12, day=31)
+
+        query_path = QUERIES_PATH.joinpath('car_sales.sql')
+        with open(query_path, 'r') as f:
+            query = f.read()
+        sales = db_source.fetch_to_polars(query, parameters=[date_start, date_end])
+        duckdb_conn.register('sales', sales)
+        return 
+    
+
+    def test_normalize(self):
+        sales_data: pl.DataFrame = duckdb_conn.sql('select * from sales').pl()
+        sales_data = sales_data.with_columns(pl.col('*'), pl.col('currency_name').alias('code'))
+        target_currency_code = 'USD'
+
+        exchange_list_df = get_currency_exchange_rate_as_polars(target_currency_code=target_currency_code)
+        exchange_last_updated_at = exchange_list_df.max().select(pl.col('updated_at')).item(0,0)
+
+        sales_normalized = sales_data \
+                            .join(
+                                exchange_list_df,
+                                on='code',
+                                how='inner') \
+                            .select(
+                              pl.col('*'),
+                              pl.col('sale_price').floordiv(pl.col('rate')).alias('sale_price_normalized'),
+                              pl.lit(target_currency_code).alias('sale_price_normalized_currency'),
+                              pl.lit(exchange_last_updated_at).alias('exchange_rate_date')
+                            )
+        duckdb_conn.register('sales_normalized_polars', sales_normalized)
+        return 
+    
+    def test_remove_invalid(self):
+        data = duckdb_conn.sql('select * from sales_normalized_polars').pl()
+
+        validated_data = data \
+                            .filter(pl.col('sale_price').gt(0)) \
+                            .filter(pl.col('brand_id').is_not_null()) \
+                            .filter(pl.col('car_id').is_not_null()) \
+                            .filter(pl.col('currency_id').is_in([1,2,3,4])) \
+                            .filter(pl.col('sale_price_normalized').gt(0)) \
+                            .filter(pl.col('sale_price_normalized_currency').ne(pl.lit('')))
+        return
         
         
 if __name__ == '__main__':
