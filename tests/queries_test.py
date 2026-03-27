@@ -1,11 +1,10 @@
 import unittest
-from datetime import datetime, timedelta, UTC
-from time import sleep, perf_counter
+from datetime import datetime, UTC
 import duckdb
 from duckdb import Expression, ConstantExpression
 from code.settings import BASE_PATH, QUERIES_PATH, duckdb_conn
 from code.utils import get_currency_exchange_rate_from_file, get_currency_exchange_rate_as_polars
-from code.connections import db_source, db_destination
+from code.connections import db_source
 import polars as pl
 
 
