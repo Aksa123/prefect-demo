@@ -105,13 +105,9 @@ def generate_delete_query(table_name: str, pk_column_names: list[str], placehold
 
 
 def batch_operation(conn: DBConnection, query: str, data: pl.DataFrame, limit: int = 1000):
-    # Deque is faster than list because of O(1) complexity for .append func
-    data_list = deque()
-    height = data.height
-    
-    for count, item in enumerate(data.iter_rows(), start=1):
-        data_list.append(item)
-        if count % limit == 0 or count == height:
-            conn.executemany(query, data_list)
-            logger.debug(f'added {len(data_list)} items')
-            data_list.clear()
+    # Deque is faster than list because of O(1) complexity for .append func    
+    i = 0
+    while i < data.height:
+        data_list = data[i:i+limit].rows()
+        conn.executemany(query, data_list)
+        i += limit
