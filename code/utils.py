@@ -9,7 +9,6 @@ from enum import Enum
 import duckdb
 from datetime import datetime, UTC
 import polars as pl
-from collections import deque
 
 
 class PlaceholderSign(Enum):
@@ -105,9 +104,9 @@ def generate_delete_query(table_name: str, pk_column_names: list[str], placehold
 
 
 def batch_operation(conn: DBConnection, query: str, data: pl.DataFrame, limit: int = 1000):
-    # Deque is faster than list because of O(1) complexity for .append func    
     i = 0
     while i < data.height:
         data_list = data[i:i+limit].rows()
         conn.executemany(query, data_list)
+        print(f'added {len(data_list)} items')
         i += limit
