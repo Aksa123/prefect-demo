@@ -21,9 +21,9 @@ class LoggerFile(Logger):
             if self.counter < LIMIT_LOG_WRITES_PER_HOUR :
                 self.counter += 1
                 return func(self, msg, stacklevel=stacklevel, exc_info=exc_info)
-            elif self.counter_date + timedelta(hours=1) <= datetime.now(UTC):
+            elif self.counter_date + timedelta(hours=1) <= datetime.now(tz=wib_tz):
                 self.counter = 1
-                self.counter_date = datetime.now(UTC)
+                self.counter_date = datetime.now(tz=wib_tz)
                 return func(self, msg, stacklevel=stacklevel, exc_info=exc_info)
         return inner
 
@@ -37,7 +37,7 @@ class LoggerFile(Logger):
 
 
 class DbHandler(Handler):
-    """Save logs in a database"""
+    """Save logs to database"""
     def emit(self, record):
         pass
         # Log.create(level=record.levelname, file=record.filename + " - line " + str(record.lineno), message=record.exc_text or record.msg, created_at=record.asctime)

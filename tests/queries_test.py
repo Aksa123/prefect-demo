@@ -91,8 +91,7 @@ class TestWithPolars(unittest.TestCase):
             query = f.read()
         sales = db_source.fetch_to_polars(query, parameters=[date_start, date_end])
         duckdb_conn.register('sales', sales)
-        return 
-    
+         
 
     def test_normalize(self):
         sales_data: pl.DataFrame = duckdb_conn.sql('select * from sales').pl()
@@ -102,19 +101,24 @@ class TestWithPolars(unittest.TestCase):
         exchange_list_df = get_currency_exchange_rate_as_polars(target_currency_code=target_currency_code)
         exchange_last_updated_at = exchange_list_df.max().select(pl.col('updated_at')).item(0,0)
 
-        sales_normalized = sales_data \
+        exchange_rate_joined = sales_data \
                             .join(
                                 exchange_list_df,
                                 on='code',
-                                how='inner') \
+                                how='left') 
+        
+        null_rate = exchange_rate_joined.null_count().get_column('rate')[0]
+        self.assertEqual(null_rate, 0, 'Null rate value detected')
+
+        sales_normalized = exchange_rate_joined \
                             .select(
-                              pl.col('*'),
-                              pl.col('sale_price').floordiv(pl.col('rate')).alias('sale_price_normalized'),
-                              pl.lit(target_currency_code).alias('sale_price_normalized_currency'),
-                              pl.lit(exchange_last_updated_at).alias('exchange_rate_date')
+                                pl.col('*'),
+                                pl.col('sale_price').floordiv(pl.col('rate')).alias('sale_price_normalized'),
+                                pl.lit(target_currency_code).alias('sale_price_normalized_currency'),
+                                pl.lit(exchange_last_updated_at).alias('exchange_rate_date')
                             )
         duckdb_conn.register('sales_normalized_polars', sales_normalized)
-        return 
+         
     
     def test_remove_invalid(self):
         data = duckdb_conn.sql('select * from sales_normalized_polars').pl()
@@ -126,7 +130,9 @@ class TestWithPolars(unittest.TestCase):
                             .filter(pl.col('currency_id').is_in([1,2,3,4])) \
                             .filter(pl.col('sale_price_normalized').gt(0)) \
                             .filter(pl.col('sale_price_normalized_currency').ne(pl.lit('')))
-        return
+        
+        self.assertGreater(validated_data.__len__(), 0, 'All data is invalid. Possible validation strategy issue, or indeed all data is garbage.')
+        
         
         
 if __name__ == '__main__':
